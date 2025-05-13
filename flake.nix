@@ -22,9 +22,10 @@
       dockerImage = pkgs.dockerTools.buildImage {
         name = "promwriter";
         tag = promwriter.version;
-        contents = [ promwriter ];
+        #contents = [ promwriter ];
+        # copyToRoot = [ promwriter ];
         config = {
-          Cmd = [ "/bin/promwriter" ];
+          Cmd = [ "${promwriter}/bin/promwriter" ];
           # Env = [ "REMOTE_WRITE_URL=http://localhost:9090/api/v1/write" ];
         };
       };

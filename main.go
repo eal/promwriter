@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
-	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -12,105 +13,70 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/prometheus/prometheus/prompb"
-	"net/http"
 )
 
-type Input struct {
-	Value     float64           `json:"value"`
-	Timestamp int64             `json:"timestamp,omitempty"`
-	Labels    map[string]string `json:"labels"`
+type input struct {
+	Value  float64           `json:"value"`
+	Labels map[string]string `json:"labels"`
 }
 
-func getenvOrFlag(name, fallback string) string {
-	env := os.Getenv(name)
-	if env != "" {
-		return env
+func mustAtoi(s string) int {
+	if s == "" {
+		return 0
 	}
-	return fallback
-}
-
-func parseFlags() (Input, string, time.Duration) {
-	var (
-		dataFlag    = flag.String("data", "", "Metric JSON string")
-		urlFlag     = flag.String("url", "", "Remote write URL")
-		intervalStr = flag.String("interval", "", "Repeat interval in seconds")
-	)
-	flag.Parse()
-
-	dataStr := getenvOrFlag("METRIC_DATA", *dataFlag)
-	url := getenvOrFlag("REMOTE_WRITE_URL", *urlFlag)
-	intervalRaw := getenvOrFlag("SEND_INTERVAL", *intervalStr)
-
-	if dataStr == "" || url == "" {
-		fmt.Fprintln(os.Stderr, "data and url are required")
-		os.Exit(1)
-	}
-
-	var input Input
-	if err := json.Unmarshal([]byte(dataStr), &input); err != nil {
-		panic(fmt.Errorf("failed to parse --data: %w", err))
-	}
-	if input.Timestamp == 0 {
-		input.Timestamp = time.Now().UnixMilli()
-	}
-
-	var interval time.Duration
-	if intervalRaw != "" {
-		secs, err := strconv.Atoi(intervalRaw)
-		if err != nil {
-			panic("invalid interval")
-		}
-		interval = time.Duration(secs) * time.Second
-	}
-	return input, url, interval
-}
-
-func send(input Input, url string) error {
-	labels := make([]prompb.Label, 0, len(input.Labels))
-	for k, v := range input.Labels {
-		labels = append(labels, prompb.Label{Name: k, Value: v})
-	}
-	ts := prompb.TimeSeries{
-		Labels: labels,
-		Samples: []prompb.Sample{{
-			Value:     input.Value,
-			Timestamp: time.Now().UnixMilli(),
-		}},
-	}
-	req := &prompb.WriteRequest{Timeseries: []prompb.TimeSeries{ts}}
-
-	data, err := proto.Marshal(req)
+	i, err := strconv.Atoi(s)
 	if err != nil {
-		return err
+		log.Fatal("invalid interval:", err)
 	}
-	compressed := snappy.Encode(nil, data)
-
-	resp, err := http.Post(url, "application/x-protobuf", bytes.NewReader(compressed))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	return nil
+	return i
 }
 
 func main() {
-	input, url, interval := parseFlags()
+	dataJSON := flag.String("data", os.Getenv("METRIC_DATA"), "metric JSON")
+	url := flag.String("url", os.Getenv("REMOTE_WRITE_URL"), "remote-write URL")
+	interval := flag.Int("interval", mustAtoi(os.Getenv("SEND_INTERVAL")), "seconds between sends")
+	flag.Parse()
 
-	if interval == 0 {
-		if err := send(input, url); err != nil {
-			panic(err)
-		}
-		return
+	if *dataJSON == "" || *url == "" {
+		log.Fatal("both --data and --url are required")
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		if err := send(input, url); err != nil {
-			fmt.Fprintln(os.Stderr, "send failed:", err)
-		}
-		<-ticker.C
+	var in input
+	if err := json.Unmarshal([]byte(*dataJSON), &in); err != nil {
+		log.Fatal("invalid JSON:", err)
 	}
+
+	// prepare WriteRequest
+	labels := make([]prompb.Label, 0, len(in.Labels))
+	for k, v := range in.Labels {
+		labels = append(labels, prompb.Label{Name: k, Value: v})
+	}
+	wr := &prompb.WriteRequest{Timeseries: []prompb.TimeSeries{{
+		Labels: labels,
+		Samples: []prompb.Sample{{Value: in.Value}},
+	}}}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	send := func() {
+		wr.Timeseries[0].Samples[0].Timestamp = time.Now().UnixMilli()
+		b, err := proto.Marshal(wr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		compressed := snappy.Encode(nil, b)
+		resp, err := client.Post(*url, "application/x-protobuf", bytes.NewReader(compressed))
+		if err != nil {
+			log.Println("send error:", err)
+			return
+		}
+		resp.Body.Close()
+		log.Println("status:", resp.StatusCode)
+	}
+    for {
+        send()
+        if *interval == 0 {
+            break
+        }
+        time.Sleep(time.Duration(*interval) * time.Second)
+    }
 }
