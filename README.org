@@ -1,0 +1,45 @@
+* Promwriter
+
+#+begin_quote
+A stupid simple command line Prometheus remote writer
+#+end_quote
+
+This is a simple tool to write metrics to Prometheus using remote
+write.  It was created to debug Prometheus, but could possibly also be
+used to send metrics from cron jobs running shell scripts.
+
+It has almost no features, and probably never will.
+
+To run:
+
+#+begin_src sh
+promwriter --data '{"value":123.4,"labels":{"__name__":"dummy_metric","job":"foobar123"}}' --url http://localhost:9090/api/v1/write  
+#+end_src
+
+#+begin_src sh
+  docker run -ti -e METRIC_DATA='{"value":123.4,"labels":{"__name__":"dummy_metric","job":"foobar123"}}' -e REMOTE_WRITE_URL=http://1.2.3.4:9090/api/v1/write datatyp/promwriter:v0.0.1
+#+end_src
+
+It also accepts --interval or SEND_INTERVAL to send metrics every n
+seconds.
+
+Auth is not supported
+
+** Building
+
+#+begin_src sh
+  go build .
+#+end_src
+
+*** With Nix (requires flake support)
+
+#+begin_src sh
+  nix build 
+#+end_src
+
+*** Docker container (with Nix)
+
+#+begin_src sh
+  nix build .#dockerImage
+  docker load < result
+#+end_src
